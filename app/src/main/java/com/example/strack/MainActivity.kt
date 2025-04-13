@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Xml
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -55,6 +57,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -76,6 +79,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -87,6 +91,7 @@ import com.example.strack.ui.theme.StrackTheme
 import com.jakewharton.threetenabp.AndroidThreeTen
 import org.threeten.bp.DayOfWeek
 import org.threeten.bp.LocalDate
+import org.threeten.bp.LocalTime
 import org.threeten.bp.ZoneId
 import org.threeten.bp.ZonedDateTime
 import org.threeten.bp.format.DateTimeFormatter
@@ -94,6 +99,8 @@ import org.threeten.bp.temporal.ChronoUnit
 import org.threeten.bp.temporal.TemporalAdjusters
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -107,6 +114,22 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+
+fun encryptAES(data: ByteArray): ByteArray {
+    val key = SecretKeySpec(SECRET_KEY.toByteArray(), "AES")
+    val cipher = Cipher.getInstance("AES")
+    cipher.init(Cipher.ENCRYPT_MODE, key)
+    return cipher.doFinal(data)
+}
+
+fun decryptAES(data: ByteArray): ByteArray {
+    val key = SecretKeySpec(SECRET_KEY.toByteArray(), "AES")
+    val cipher = Cipher.getInstance("AES")
+    cipher.init(Cipher.DECRYPT_MODE, key)
+    return cipher.doFinal(data)
+}
 
 // Lang.get(0, context)
 object Lang {
@@ -187,7 +210,7 @@ class MainActivity : ComponentActivity() {
             Log.w("Strack", "strack.xml não existe! Criando novo arquivo.")
             try {
                 filePath.writeText(
-                    "<strack><settings><userName></userName><vehType>vehType1</vehType>" +
+                    "<strack><settings><vehType>vehType1</vehType>" +
                             "<reminder kmGasoline=\"200\" kmOil=\"900\" kmCalibrateTires=\"200\" " +
                             "kmTightenChain=\"900\" kmCleanChain=\"900\" kmCheckLights=\"900\" kmCheckRadiator=\"900\" kmCleanFilter=\"900\"/></settings>" +
                             "<operations></operations></strack>"
@@ -201,20 +224,15 @@ class MainActivity : ComponentActivity() {
 }
 
 fun saveStrackToXML(settings: Map<String, String>, operations: List<Triple<String, String, String>>, context: Context) {
-    val xml = Xml.newSerializer()
-
-    // Salva o arquivo dentro da pasta 'strack'
     val strackDir = File(context.filesDir, "strack")
-    if (!strackDir.exists()) {
-        strackDir.mkdir() // Cria a pasta 'strack' se não existir
-    }
+    if (!strackDir.exists()) strackDir.mkdir()
 
-    val outputStream = FileOutputStream(File(strackDir, "strack.xml"))
-    xml.setOutput(outputStream, "UTF-8")
+    val byteStream = ByteArrayOutputStream()
+    val xml = Xml.newSerializer()
+    xml.setOutput(byteStream, "UTF-8")
     xml.startDocument("UTF-8", true)
     xml.startTag("", "strack")
 
-    // Salvar settings
     xml.startTag("", "settings")
     xml.startTag("", "userName")
     xml.text(settings["userName"] ?: Lang.get(7, context))
@@ -223,7 +241,6 @@ fun saveStrackToXML(settings: Map<String, String>, operations: List<Triple<Strin
     xml.text(settings["vehType"] ?: "vehType1")
     xml.endTag("", "vehType")
 
-    // Salvar reminder com quilometragens
     xml.startTag("", "reminder")
     xml.attribute("", "kmGasoline", settings["kmGasoline"] ?: "200")
     xml.attribute("", "kmOil", settings["kmOil"] ?: "900")
@@ -234,10 +251,8 @@ fun saveStrackToXML(settings: Map<String, String>, operations: List<Triple<Strin
     xml.attribute("", "kmCheckRadiator", settings["kmCheckRadiator"] ?: "900")
     xml.attribute("", "kmCleanFilter", settings["kmCleanFilter"] ?: "900")
     xml.endTag("", "reminder")
-
     xml.endTag("", "settings")
 
-    // Salvar operações
     xml.startTag("", "operations")
     for ((type, value, date) in operations) {
         xml.startTag("", "operation")
@@ -250,7 +265,10 @@ fun saveStrackToXML(settings: Map<String, String>, operations: List<Triple<Strin
 
     xml.endTag("", "strack")
     xml.endDocument()
-    outputStream.close()
+    xml.flush()
+
+    val encryptedData = encryptAES(byteStream.toByteArray())
+    File(strackDir, "strack.xml").writeBytes(encryptedData)
 }
 
 fun loadStrackFromXML(context: Context): Pair<Map<String, String>, List<Triple<String, String, String>>> {
@@ -258,17 +276,16 @@ fun loadStrackFromXML(context: Context): Pair<Map<String, String>, List<Triple<S
     val operations = mutableListOf<Triple<String, String, String>>()
 
     try {
-        // Abre o arquivo dentro da pasta 'strack'
-        val strackDir = File(context.filesDir, "strack")
-        val inputStream: InputStream = FileInputStream(File(strackDir, "strack.xml"))
+        val file = File(File(context.filesDir, "strack"), "strack.xml")
+        val encryptedBytes = file.readBytes()
+        val decryptedBytes = decryptAES(encryptedBytes)
 
         val factory = XmlPullParserFactory.newInstance()
         val parser = factory.newPullParser()
+        parser.setInput(ByteArrayInputStream(decryptedBytes), "UTF-8")
 
-        parser.setInput(inputStream, "UTF-8")
         var eventType = parser.eventType
         var currentTag = ""
-
         var type = ""
         var value = ""
         var date = ""
@@ -277,7 +294,6 @@ fun loadStrackFromXML(context: Context): Pair<Map<String, String>, List<Triple<S
             when (eventType) {
                 XmlPullParser.START_TAG -> {
                     currentTag = parser.name
-                    // Processa os diferentes tags
                     if (currentTag == "userName") {
                         settings["userName"] = parser.nextText()
                     } else if (currentTag == "vehType") {
@@ -305,7 +321,6 @@ fun loadStrackFromXML(context: Context): Pair<Map<String, String>, List<Triple<S
             }
             eventType = parser.next()
         }
-        inputStream.close()
 
     } catch (e: Exception) {
         e.printStackTrace()
@@ -579,7 +594,7 @@ fun Footer(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .background(footerBackgroundColor), // Usando a cor passada como parâmetro
+            .background(footerBackgroundColor.copy(alpha = 0.5f)),
         contentAlignment = Alignment.Center
     ) {
         // Row para garantir que o título ocupe toda a largura disponível e o botão de configurações fique à direita
@@ -592,7 +607,7 @@ fun Footer(
             // Título clicável
             Text(
                 text = title,
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 fontSize = 20.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
@@ -765,32 +780,57 @@ fun SettingsPage(
                     Column {
                         Text(Lang.get(26, context), color = foreColor, fontSize = 18.sp)
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Button(onClick = { saveBackupLauncher.launch(getBackupFileName(context)) },
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Button(
+                                onClick = { saveBackupLauncher.launch(getBackupFileName(context)) },
+                                modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.tertiary,
-                                    contentColor = Color.White
-                                )) {
-                                Text(Lang.get(27, context))
+                                    contentColor = Color.DarkGray
+                                )
+                            ) {
+                                Text(
+                                    text = Lang.get(27, context),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            Button(onClick = { importBackupLauncher.launch(arrayOf("*/*")) },
+                            Button(
+                                onClick = { importBackupLauncher.launch(arrayOf("*/*")) },
+                                modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.tertiary,
-                                    contentColor = Color.White
-                                )) {
-                                Text(Lang.get(28, context))
+                                    contentColor = Color.DarkGray
+                                )
+                            ) {
+                                Text(
+                                    text = Lang.get(28, context),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            Button(onClick = { onReset() },
+                            Button(
+                                onClick = { onReset() },
+                                modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.tertiary,
-                                    contentColor = Color.White
-                                )) {
-                                Text(Lang.get(29, context), color = Color.White)
+                                    contentColor = Color.DarkGray
+                                )
+                            ) {
+                                Text(
+                                    text = Lang.get(29, context),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
                 }
             }
+
             // Versão do app
             item {
                 Box(
@@ -809,7 +849,7 @@ fun SettingsPage(
             }
             item { Spacer(modifier = Modifier.height(8.dp)) }
         }
-        Footer(title = Lang.get(32, context), onClick = onBack, footerBackgroundColor = Color(0xFFFF5100))
+        Footer(title = Lang.get(32, context), onClick = onBack, footerBackgroundColor = LocalExtraColors.current.lightBackground)
     }
 }
 
@@ -919,6 +959,7 @@ fun SettingsNumberField(label: String, value: String, onValueChange: (String) ->
         )
     }
 }
+
 @Composable
 fun VehicleTypeSelector(
     label: String,
@@ -937,7 +978,13 @@ fun VehicleTypeSelector(
                 ) {
                     RadioButton(
                         selected = selectedVehicleType == vehicleType,
-                        onClick = { onValueChange(vehicleType) }
+                        onClick = { onValueChange(vehicleType) },
+                        colors = RadioButtonDefaults.colors(
+                            selectedColor = MaterialTheme.colorScheme.tertiary,
+                            unselectedColor = MaterialTheme.colorScheme.onSurface,
+                            disabledSelectedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                            disabledUnselectedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        )
                     )
                     // Exibição: usamos Lang.get() para obter a tradução
                     val displayText = when(vehicleType) {
@@ -950,6 +997,113 @@ fun VehicleTypeSelector(
             }
         }
     }
+}
+
+
+@Composable
+fun HomeScreen(
+    onStart: () -> Unit,
+    onSettingsClick: () -> Unit,
+    settings: MutableMap<String, String>,
+    operations: List<Triple<String, String, String>>,
+    userName: String
+) {
+    val backColor = MaterialTheme.colorScheme.background
+    val foreColor = MaterialTheme.colorScheme.onBackground
+    val lightBackColor = LocalExtraColors.current.lightBackground
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(true) { saveLastPage(context, "Home") }
+
+    // Calcula os valores semanais e mensais
+    val weeklySums = calculateWeeklySums(operations)
+    val maxValue = weeklySums.maxOrNull() ?: 1
+    val monthlySums = calculateMonthlySums(operations)
+    val maxMonthValue = monthlySums.maxOrNull() ?: 1
+    val currentWeekDays = getCurrentWeekDays()
+    val lastFiveMonths = getLastFiveMonths(context)
+    val lembretes = getLembretes(context, operations, settings)
+
+    ClickableBackgroundColumn(
+        focusManager = focusManager,
+        backColor = backColor
+    ) {
+        Header(title = Lang.get(33, context), onSettingsClick = onSettingsClick, headerBackgroundColor = lightBackColor)
+
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 16.dp, start = 16.dp, end = 16.dp)
+        ) {
+            item { WelcomeBox(userName, foreColor, lightBackColor) }
+                item { ChartBox(Lang.get(34, context), weeklySums, maxValue, currentWeekDays.map { it.dayOfMonth.toString() }, listOf(Lang.get(45, context), Lang.get(46, context), Lang.get(47, context), Lang.get(48, context), Lang.get(49, context), Lang.get(50, context), Lang.get(51, context)), Color(0xFF0035FF), lightBackColor, foreColor) }
+                item { ChartBox(Lang.get(35, context), monthlySums, maxMonthValue, lastFiveMonths, emptyList(), Color(0xFFE72222), lightBackColor, foreColor) }
+                item { ReminderBox(lembretes, foreColor, lightBackColor) }
+            item { Spacer(modifier = Modifier.height(8.dp))}
+        }
+
+        Footer(title = Lang.get(36, context), onClick = onStart, footerBackgroundColor = LocalExtraColors.current.lightBackground)
+    }
+}
+
+// ================== COMPONENTES AUXILIARES ==================
+
+@Composable
+fun ClickableBackgroundColumn(
+    focusManager: FocusManager,
+    backColor: Color,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backColor)
+            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars),
+        content = content
+    )
+}
+
+@Composable
+fun WelcomeBox(userName: String, foreColor: Color, backgroundColor: Color) {
+    val context = LocalContext.current
+    val userLocale: Locale = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        context.resources.configuration.locales[0]
+    } else {
+        @Suppress("DEPRECATION")
+        context.resources.configuration.locale
+    }
+
+    val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+    val fullDateFormatter = DateTimeFormatter.ofPattern("EEEE dd, MMMM yyyy", userLocale)
+
+    val currentTime = LocalTime.now().format(timeFormatter)
+    val currentFullDate = LocalDate.now()
+        .format(fullDateFormatter)
+        .split(" ")
+        .joinToString(" ") { word ->
+            word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(userLocale) else it.toString() }
+        }
+
+
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(backgroundColor, RoundedCornerShape(8.dp))
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "${Lang.get(37, context)} $userName, ${Lang.get(68, context)} $currentFullDate. ${Lang.get(67, context)} $currentTime.",
+            color = foreColor,
+            fontSize = 18.sp,
+            textAlign = TextAlign.Center
+        )
+    }
+
 }
 
 
@@ -978,89 +1132,6 @@ fun BarChart(value: Int, maxValue: Int, barColor: Color) {
         )
     }
 }
-
-@Composable
-fun HomeScreen(
-    onStart: () -> Unit,
-    onSettingsClick: () -> Unit,
-    settings: MutableMap<String, String>,
-    operations: List<Triple<String, String, String>>,
-    userName: String
-) {
-    val backColor = MaterialTheme.colorScheme.background
-    val foreColor = MaterialTheme.colorScheme.onBackground
-    val lightBackColor = LocalExtraColors.current.lightBackground
-    val context = LocalContext.current
-    val focusManager = LocalFocusManager.current
-
-    LaunchedEffect(true) { saveLastPage(context, "Home") }
-
-    // Calcula os valores semanais e mensais
-    val weeklySums = calculateWeeklySums(operations)
-    val maxValue = weeklySums.maxOrNull() ?: 1
-    val monthlySums = calculateMonthlySums(operations)
-    val maxMonthValue = monthlySums.maxOrNull() ?: 1
-    val currentWeekDays = getCurrentWeekDays()
-    val lastFiveMonths = getLastFiveMonths(context)
-    val lembretes = getLembretes(context, operations, settings)
-    val isPremium = false
-
-    ClickableBackgroundColumn(
-        focusManager = focusManager,
-        backColor = backColor
-    ) {
-        Header(title = Lang.get(33, context), onSettingsClick = onSettingsClick, headerBackgroundColor = lightBackColor)
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(top = 16.dp, start = 16.dp, end = 16.dp)
-        ) {
-            item { WelcomeBox(userName, foreColor, lightBackColor) }
-            if (isPremium){
-                item { ChartBox(Lang.get(34, context), weeklySums, maxValue, currentWeekDays.map { it.dayOfMonth.toString() }, listOf(Lang.get(45, context), Lang.get(46, context), Lang.get(47, context), Lang.get(48, context), Lang.get(49, context), Lang.get(50, context), Lang.get(51, context)), Color(0xFF0035FF), lightBackColor, foreColor) }
-                item { ChartBox(Lang.get(35, context), monthlySums, maxMonthValue, lastFiveMonths, emptyList(), Color(0xFFE72222), lightBackColor, foreColor) }
-                item { ReminderBox(lembretes, foreColor, lightBackColor) }
-            }
-            item { Spacer(modifier = Modifier.height(8.dp))}
-        }
-
-        Footer(title = Lang.get(36, context), onClick = onStart, footerBackgroundColor = Color(0xFF3D3D3D))
-    }
-}
-
-// ================== COMPONENTES AUXILIARES ==================
-
-@Composable
-fun ClickableBackgroundColumn(
-    focusManager: FocusManager,
-    backColor: Color,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backColor)
-            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .windowInsetsPadding(WindowInsets.navigationBars),
-        content = content
-    )
-}
-
-@Composable
-fun WelcomeBox(userName: String, foreColor: Color, backgroundColor: Color) {
-    val context = LocalContext.current
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(backgroundColor, RoundedCornerShape(8.dp))
-            .padding(16.dp)
-    ) {
-        Text(text = "${Lang.get(37, context)} $userName!", color = foreColor, fontSize = 18.sp, modifier = Modifier.align(Alignment.Center))
-    }
-}
-
 @Composable
 fun ChartBox(
     title: String,
@@ -1274,6 +1345,7 @@ fun getLembretes(
 
 
 // ========================================= paginas ========================================= //
+
 @Composable
 fun WorkingPage(
     operations: List<Triple<String, String, String>>,
@@ -1284,6 +1356,9 @@ fun WorkingPage(
     onEditOperation: (Int, String, String, String) -> Unit,
     onDeleteOperation: (Int) -> Unit,
 ) {
+    val isPremiumVersion = false
+    val mensalOperationsLimit = 5
+
     // Cores e estilos
     val backColor = MaterialTheme.colorScheme.background
     val foreColor = MaterialTheme.colorScheme.onBackground
@@ -1365,7 +1440,7 @@ fun WorkingPage(
             Footer(
                 title = Lang.get(41, context),
                 onClick = onBack,
-                footerBackgroundColor = Color(0xFF2B4FFF)
+                footerBackgroundColor = LocalExtraColors.current.lightBackground
             )
         }
 
@@ -1377,14 +1452,33 @@ fun WorkingPage(
                 .padding(32.dp),
             contentAlignment = Alignment.BottomEnd
         ) {
+            val now = remember { Calendar.getInstance() }
+
             FloatingActionButton(
                 onClick = {
-                    isOperationScreenVisible = true
-                    operationToEdit = null // Modo de adicionar (não edição)
-                    expandedOperationKey = null
+                    val currentMonthOperations = operations.count { op ->
+                        try {
+                            val date = sdfInput.parse(op.third)
+                            if (date != null) {
+                                val cal = Calendar.getInstance().apply { time = date }
+                                cal.get(Calendar.MONTH) == now.get(Calendar.MONTH) &&
+                                        cal.get(Calendar.YEAR) == now.get(Calendar.YEAR)
+                            } else false
+                        } catch (e: Exception) {
+                            false
+                        }
+                    }
+
+                    if (!isPremiumVersion && currentMonthOperations >= mensalOperationsLimit) {
+                        Toast.makeText(context, "${Lang.get(65, context)} (${currentMonthOperations}/${mensalOperationsLimit})\n${Lang.get(64, context)}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        isOperationScreenVisible = true
+                        operationToEdit = null
+                        expandedOperationKey = null
+                    }
                 },
                 modifier = Modifier.size(80.dp),
-                containerColor = MaterialTheme.colorScheme.tertiary,
+                containerColor = MaterialTheme.colorScheme.secondary,
                 contentColor = foreColor
             ) {
                 Text(
@@ -1442,7 +1536,7 @@ fun DateSection(
             .padding(8.dp)
             .wrapContentSize(Alignment.Center)
     ) {
-        val backgroundColor = if (date == todayStr) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.surface
+        val backgroundColor = if (date == todayStr) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surface
                 Box(
             modifier = Modifier
                 .background(backgroundColor, RoundedCornerShape(20.dp))
@@ -1537,9 +1631,8 @@ fun OperationRow(
                     .background(getTypeColor(context, type), RoundedCornerShape(roundMax.dp))
                     .height(62.dp)
                     .padding(12.dp)
-                    .padding(end=8.dp)
+                    .padding(end = 8.dp)
             ) {
-                // Aqui usamos translateType para exibir o texto traduzido, mantendo o valor interno para a lógica
                 Text(
                     text = translateType(context, type),
                     color = Color.White,
@@ -1549,36 +1642,55 @@ fun OperationRow(
             }
         }
     }
+
     if (expandedOperationKey == key) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .background(LocalExtraColors.current.lightBackground, RoundedCornerShape(8.dp))
-                .padding(8.dp)
         ) {
             Row(
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                IconButton(onClick = onStartEditOperation) {
+                Button(
+                    onClick = onStartEditOperation,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                ) {
                     Text(
-                        "✎",
+                        Lang.get(43, context), // "Editar"
                         color = MaterialTheme.colorScheme.onBackground,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 30.sp)
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp)
                     )
                 }
-                IconButton(onClick = { onDeleteOperation(index) }) {
+
+                Text(
+                    text = "|",
+                    modifier = Modifier
+                        .padding(horizontal = 1.dp)
+                        .align(Alignment.CenterVertically),
+                    color = MaterialTheme.colorScheme.surface,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 28.sp)
+                )
+
+                Button(
+                    onClick = { onDeleteOperation(index) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                ) {
                     Text(
-                        "🗑️",
+                        Lang.get(66, context), // "Excluir"
                         color = MaterialTheme.colorScheme.onBackground,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 30.sp)
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp)
                     )
                 }
             }
         }
     }
 }
+
 
 
 
@@ -1752,7 +1864,7 @@ fun OperationScreen(
                         .fillMaxWidth()
                         .height(68.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary,
+                        containerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = foreColor
                     )
                 ) {
